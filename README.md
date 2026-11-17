@@ -1,21 +1,31 @@
-# Read before getting started!!
+Kalshi orderbook scraper
+=======================
 
-First, read [src/main.rs](https://github.com/voluntas-io/engineering-challenge/blob/main/src/main.rs). Then, some background on this repo:
+The scraper subscribes to every open market except multivariate events and writes binary SBE messages to stdout. Logs go to stderr.
 
-This repo uses the [FIX SBE standard](https://fixtrading.org/packages/simple-binary-encoding-technical-specification-v2-rc2/)
-for writing binary messages. The rust code abstracts this away for you, and you can simply use the helpers, as demonstrated in `main.rs`.
+Run
+---
 
-### More background, in case you are curious!
+Place the private key in `key.pem` (filename overriden by `--key`) and pass its API key ID with `--key-id`. Ed25519 PKCS#8 and RSA PKCS#1/PKCS#8 keys are supported.
 
-FIX SBE is defined in XML, which I find extremely cumbersome to edit, especially
-when updating schemas frequently. To solve this, I have also introduced some
-helper code that takes our own custom YAML format, and turns it into FIX SBE
-XML, which in turn is used to generate rust code to encode and decode the
-messages. **You don't need to edit any of these files**. This explanation is
-simply to help you understand the origins of the various files in this repo.
+```sh
+cargo run -r -- --key-id YOUR_API_KEY_ID > orderbooks.sbe
+```
 
-If you're curious to see the YAML schema, take a look at [challenge_orderbook.yaml](https://github.com/voluntas-io/engineering-challenge/blob/main/sbe_schemas/engineering_challenge/challenge_orderbook.yaml).
-We also use a custom timestamp field, so that the Rust struct can use
-`chrono::DateTime` in the generated struct, and in SBE schema, it is a uint64
-representing the timestamp as the number of microseconds since unix epoch.
+To stop, press Ctrl-C.
 
+Subscriptions and recovery
+-------------------------
+
+Market list is refreshed every 60 seconds. By default, markets are ditstributed by 2,000 per connection. Connections are properly load-balanced when new markets are added and old ones are removed.
+
+Balancing uses subscription counts. It does not estimate individual market message rates. Set a lower market cap or a higher minimum connection count when busy markets exceed a connection's capacity. The program fails explicitly if the configured pool cannot cover the full universe.
+
+Each connection checks the subscription sequence, including sequenced control acknowledgments. A gap, message decoding error, negative resulting quantity, command error, idle timeout or disconnect discards the affected local books and reconnects with exponential backoff and jitter.
+
+Output
+------
+
+An exchange snapshot replaces the local book and immediately emits a `Snapshot`. Each delta emits `PriceLevelUpdate` with the resulting **absolute** quantity; zero deletes a level. Every 60 seconds the scraper also emits a full snapshot of each valid local book, interleaving the work with incoming updates. A disconnected or recovering market has no valid local book and does not emit periodic snapshots until recovery.
+
+The writer uses 64 MiB zero-padded chunks, as expected by the reader, and flushes at least once per second when data is present. Full chunks flush immediately.
